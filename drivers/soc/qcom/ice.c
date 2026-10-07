@@ -24,6 +24,9 @@
 
 #include <soc/qcom/ice.h>
 #include <linux/qtee_shmbridge.h>
+#if IS_ENABLED(CONFIG_MSM_TMECOM_QMP)
+#include <linux/tme_hwkm_master.h>
+#endif
 
 #define AES_256_XTS_KEY_SIZE			64
 
@@ -72,6 +75,10 @@
 #define QCOM_ICE_HWKM_REG_OFFSET	0x8000
 #define HWKM_OFFSET(reg)		((reg) + QCOM_ICE_HWKM_REG_OFFSET)
 
+#define QCOM_ICE_REG_HWKM_TZ_TPKEY_RECEIVE_CTL	0x101C
+#define QCOM_ICE_HWKM_TPKEY_EN			BIT(8)
+#define QCOM_ICE_HWKM_SLAVE_TPKEY_VAL		0x18C
+
 #define qcom_ice_writel(engine, val, reg)	\
 	writel((val), (engine)->base + (reg))
 
@@ -88,6 +95,8 @@ struct qcom_ice {
 	bool use_hwkm;
 	bool hwkm_init_complete;
 	bool handle_clks;
+	bool set_tpkey;
+	bool tpkey_done;
 };
 
 union crypto_cfg {
@@ -343,6 +352,56 @@ static int translate_hwkm_slot(struct qcom_ice *ice, int slot)
 }
 
 #if IS_ENABLED(CONFIG_SCSI_UFS_CRYPTO_QTI) || IS_ENABLED(CONFIG_MMC_CRYPTO_QTI)
+/*
+ * Older trustzone does not broadcast the HWKM transport key to the ICE
+ * slave on its own, so do it from HLOS through TME before the first
+ * wrapped key gets programmed.
+ */
+static int qcom_ice_hwkm_set_tpkey(struct qcom_ice *ice)
+{
+#if IS_ENABLED(CONFIG_MSM_TMECOM_QMP)
+	struct tme_ext_err_info errinfo = {0};
+	int retries = 0;
+	u32 val;
+	int err;
+
+	if (!ice->set_tpkey || ice->tpkey_done)
+		return 0;
+
+	/* Enable ICE slave TPKEY receive mode */
+	val = qcom_ice_readl(ice, HWKM_OFFSET(QCOM_ICE_REG_HWKM_TZ_TPKEY_RECEIVE_CTL));
+	qcom_ice_writel(ice, val & ~QCOM_ICE_HWKM_TPKEY_EN,
+			HWKM_OFFSET(QCOM_ICE_REG_HWKM_TZ_TPKEY_RECEIVE_CTL));
+	wmb();
+	qcom_ice_writel(ice, QCOM_ICE_HWKM_SLAVE_TPKEY_VAL,
+			HWKM_OFFSET(QCOM_ICE_REG_HWKM_TZ_TPKEY_RECEIVE_CTL));
+	wmb();
+
+	do {
+		err = tme_hwkm_master_broadcast_transportkey(&errinfo);
+		if (err != -ENODEV && err != -EAGAIN)
+			break;
+		usleep_range(8000, 12000);
+	} while (++retries < 50);
+
+	/* Disable ICE slave TPKEY receive mode */
+	val = qcom_ice_readl(ice, HWKM_OFFSET(QCOM_ICE_REG_HWKM_TZ_TPKEY_RECEIVE_CTL));
+	qcom_ice_writel(ice, val & ~QCOM_ICE_HWKM_TPKEY_EN,
+			HWKM_OFFSET(QCOM_ICE_REG_HWKM_TZ_TPKEY_RECEIVE_CTL));
+	wmb();
+
+	if (err) {
+		dev_err(ice->dev, "HWKM broadcast TP key failed: %d\n", err);
+		return err;
+	}
+
+	ice->tpkey_done = true;
+	return 0;
+#else
+	return 0;
+#endif
+}
+
 static int qcom_ice_program_wrapped_key(struct qcom_ice *ice,
 					const struct blk_crypto_key *key,
 					u8 data_unit_size, int slot)
@@ -366,6 +425,10 @@ static int qcom_ice_program_wrapped_key(struct qcom_ice *ice,
 
 	return err;
 #endif
+
+	err = qcom_ice_hwkm_set_tpkey(ice);
+	if (err)
+		return err;
 
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.dusize = data_unit_size;
@@ -601,6 +664,8 @@ static struct qcom_ice *qcom_ice_create(struct device *dev,
 
 	engine->use_hwkm = of_property_read_bool(dev->of_node,
 						 "qcom,ice-use-hwkm");
+	engine->set_tpkey = of_property_read_bool(dev->of_node,
+						  "qcom,ice-hwkm-set-tpkey");
 
 	if (!qcom_ice_check_supported(engine))
 		return ERR_PTR(-EOPNOTSUPP);
