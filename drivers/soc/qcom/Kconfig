@@ -4,6 +4,42 @@
 #
 menu "Qualcomm SoC drivers"
 
+config XIAOMI_DEVICE_DTBS
+	depends on ARCH_QCOM
+	default n
+	bool "Xiaomi Device DTBs"
+	help
+	  Only include Xiaomi device specific DTBs to limit the number that
+	  get built during kernel compilation.
+
+config SKY_DTB
+	depends on XIAOMI_DEVICE_DTBS
+	default n
+	bool "Xiaomi Sky Device DTB"
+	help
+	  Only include Xiaomi Sky device specific device tree.
+
+config BREEZE_DTB
+	depends on XIAOMI_DEVICE_DTBS
+	default n
+	bool "Xiaomi Breeze Device DTB"
+	help
+	  Only include Xiaomi Breeze device specific device tree.
+
+config FLAME_DTB
+	depends on XIAOMI_DEVICE_DTBS
+	default n
+	bool "Xiaomi Flame Device DTB"
+	help
+	  Only include Xiaomi Flame device specific device tree.
+
+config MIST_DTB
+	depends on XIAOMI_DEVICE_DTBS
+	default n
+	bool "Xiaomi Mist Device DTB"
+	help
+	  Only include Xiaomi Mist device specific device tree.
+
 config SPS
 	tristate "SPS support"
 	select GENERIC_ALLOCATOR
