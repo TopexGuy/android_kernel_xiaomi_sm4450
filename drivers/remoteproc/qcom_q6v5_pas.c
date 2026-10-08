@@ -1441,6 +1441,15 @@ static int adsp_probe(struct platform_device *pdev)
 	adsp->region_assign_count = min_t(int, MAX_ASSIGN_COUNT, desc->region_assign_count);
 	adsp->region_assign_vmid = desc->region_assign_vmid;
 	adsp->region_assign_shared = desc->region_assign_shared;
+
+	/* Older firmware memory maps don't have the region to assign */
+	if (adsp->region_assign_idx &&
+	    of_count_phandle_with_args(pdev->dev.of_node, "memory-region",
+				       NULL) <= adsp->region_assign_idx) {
+		dev_info(&pdev->dev, "no shareable memory-region, not assigning\n");
+		adsp->region_assign_idx = 0;
+	}
+
 	adsp->dma_phys_below_32b = desc->dma_phys_below_32b;
 	adsp->check_status = desc->check_status;
 	adsp->subsys_recovery_disabled = true;
