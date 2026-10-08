@@ -1076,6 +1076,12 @@ static int usb_psy_set_icl(struct battery_chg_dev *bcdev, u32 prop_id, int val)
 	/* Allow this only for SDP, CDP or USB_PD and not for other charger types */
 	switch (pst->prop[USB_ADAP_TYPE]) {
 	case POWER_SUPPLY_USB_TYPE_SDP:
+		/*
+		 * Charger firmware rejects more than 450 mA on SDP and then
+		 * reruns APSD, which drops the USB connection.
+		 */
+		val = min(val, 450000);
+		fallthrough;
 	case POWER_SUPPLY_USB_TYPE_PD:
 	case POWER_SUPPLY_USB_TYPE_CDP:
 		break;
