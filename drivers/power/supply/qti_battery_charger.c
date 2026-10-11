@@ -47,6 +47,9 @@
 #define BC_SHUTDOWN_NOTIFY		0x47
 #define BC_CHG_CTRL_LIMIT_EN		0x48
 #define BC_HBOOST_VMAX_CLAMP_NOTIFY	0x79
+/* Xiaomi ADSP charger extensions */
+#define BC_XM_STATUS_GET		0x50
+#define BC_XM_STATUS_SET		0x51
 #define BC_GENERIC_NOTIFY		0x80
 
 /* Generic definitions */
@@ -277,6 +280,8 @@ struct battery_chg_dev {
 	u8				chg_ctrl_start_thr;
 	u8				chg_ctrl_end_thr;
 	bool				chg_ctrl_en;
+	int				xm_input_suspend_prop;
+	u32				xm_input_suspend;
 	/* To track the driver initialization status */
 	bool				initialized;
 	bool				notify_en;
@@ -718,8 +723,17 @@ static void handle_message(struct battery_chg_dev *bcdev, void *data,
 	case BC_BATTERY_STATUS_SET:
 	case BC_USB_STATUS_SET:
 	case BC_WLS_STATUS_SET:
+	case BC_XM_STATUS_SET:
 		if (validate_message(bcdev, data, len))
 			ack_set = true;
+
+		break;
+	case BC_XM_STATUS_GET:
+		if (validate_message(bcdev, resp_msg, len) &&
+		    resp_msg->property_id == bcdev->xm_input_suspend_prop) {
+			bcdev->xm_input_suspend = resp_msg->value;
+			ack_set = true;
+		}
 
 		break;
 	case BC_SET_NOTIFY_REQ:
@@ -2246,6 +2260,68 @@ static ssize_t battery_parallel_cell_count_show(const struct class *c,
 }
 static CLASS_ATTR_RO(battery_parallel_cell_count);
 
+static int xm_write_property(struct battery_chg_dev *bcdev, u32 prop_id,
+			     u32 val, u32 opcode)
+{
+	struct battery_charger_req_msg req_msg = { { 0 } };
+
+	req_msg.property_id = prop_id;
+	req_msg.battery_id = 0;
+	req_msg.value = val;
+	req_msg.hdr.owner = MSG_OWNER_BC;
+	req_msg.hdr.type = MSG_TYPE_REQ_RESP;
+	req_msg.hdr.opcode = opcode;
+
+	return battery_chg_write(bcdev, &req_msg, sizeof(req_msg));
+}
+
+/*
+ * Charger input suspend through the Xiaomi ADSP property. The property id
+ * differs between ADSP builds, so it comes from DT.
+ */
+static ssize_t input_suspend_store(const struct class *c,
+				   const struct class_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+	bool val;
+	int rc;
+
+	if (bcdev->xm_input_suspend_prop < 0)
+		return -ENODEV;
+
+	if (kstrtobool(buf, &val))
+		return -EINVAL;
+
+	rc = xm_write_property(bcdev, bcdev->xm_input_suspend_prop, val,
+			       BC_XM_STATUS_SET);
+	if (rc < 0)
+		return rc;
+
+	bcdev->xm_input_suspend = val;
+	return count;
+}
+
+static ssize_t input_suspend_show(const struct class *c,
+				  const struct class_attribute *attr, char *buf)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+	int rc;
+
+	if (bcdev->xm_input_suspend_prop < 0)
+		return -ENODEV;
+
+	rc = xm_write_property(bcdev, bcdev->xm_input_suspend_prop, 0,
+			       BC_XM_STATUS_GET);
+	if (rc < 0)
+		return rc;
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", bcdev->xm_input_suspend);
+}
+static CLASS_ATTR_RW(input_suspend);
+
 static struct attribute *battery_class_attrs[] = {
 	&class_attr_soh.attr,
 	&class_attr_resistance.attr,
@@ -2267,6 +2343,7 @@ static struct attribute *battery_class_attrs[] = {
 	&class_attr_usb_typec_compliant.attr,
 	&class_attr_charge_control_en.attr,
 	&class_attr_battery_parallel_cell_count.attr,
+	&class_attr_input_suspend.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(battery_class);
@@ -2306,6 +2383,10 @@ static int battery_chg_parse_dt(struct battery_chg_dev *bcdev)
 				&bcdev->shutdown_volt_mv);
 
 	bcdev->ship_mode_immediate = of_property_read_bool(node, "qcom,ship-mode-immediate");
+
+	bcdev->xm_input_suspend_prop = -1;
+	of_property_read_u32(node, "xiaomi,input-suspend-prop",
+			     (u32 *)&bcdev->xm_input_suspend_prop);
 
 	rc = read_property_id(bcdev, pst, BATT_CHG_CTRL_LIM_MAX);
 	if (rc < 0) {
