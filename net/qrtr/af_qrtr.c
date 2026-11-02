@@ -168,7 +168,7 @@ static struct work_struct qrtr_backup_work;
  * @ref: reference count for node
  * @nid: node id
  * @net_id: network cluster identifer
- * @qrtr_tx_flow: tree of qrtr_tx_flow, keyed by node << 32 | port
+ * @qrtr_tx_flow: xarray of qrtr_tx_flow, keyed by node << 32 | port
  * @qrtr_tx_lock: lock for qrtr_tx_flow inserts
  * @hello_sent: hello packet sent to endpoint
  * @hello_rcvd: hello packet received from endpoint
@@ -488,14 +488,14 @@ static void __qrtr_node_release(struct kref *kref)
 			sock_put(waiter->sk);
 			kfree(waiter);
 		}
-		xa_erase(&node->qrtr_tx_flow, index);
+
 		kfree(flow);
 	}
+	xa_destroy(&node->qrtr_tx_flow);
 	mutex_unlock(&node->qrtr_tx_lock);
 
 	kfree(node);
 }
-
 /* Increment reference to node. */
 static struct qrtr_node *qrtr_node_acquire(struct qrtr_node *node)
 {
@@ -541,8 +541,10 @@ static void qrtr_tx_resume(struct qrtr_node *node, struct sk_buff *skb)
 	mutex_lock(&node->qrtr_tx_lock);
 	flow = xa_load(&node->qrtr_tx_flow, key);
 	mutex_unlock(&node->qrtr_tx_lock);
-	if (!flow)
+	if (!flow) {
+		consume_skb(skb);
 		return;
+	}
 
 	spin_lock_irqsave(&flow->lock, flags);
 	flow->pending = 0;
@@ -605,7 +607,8 @@ static int qrtr_tx_wait(struct qrtr_node *node, struct sockaddr_qrtr *to,
 			INIT_LIST_HEAD(&flow->waiters);
 			init_waitqueue_head(&flow->resume_tx);
 			spin_lock_init(&flow->lock);
-			if (xa_insert(&node->qrtr_tx_flow, key, flow, GFP_KERNEL)) {
+			if (xa_err(xa_store(&node->qrtr_tx_flow, key, flow,
+					    GFP_KERNEL))) {
 				kfree(flow);
 				flow = NULL;
 			}
