@@ -1125,7 +1125,6 @@ config ARM64_ERRATUM_4193714
 	  the affected CPUs.
 
 	  If unsure, say Y.
-
 config ARM64_ERRATUM_4118414
 	bool "Various: Completion of affected memory accesses might not be guaranteed by completion of a TLBI"
 	default y
